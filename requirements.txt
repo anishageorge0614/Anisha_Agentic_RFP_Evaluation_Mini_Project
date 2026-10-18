@@ -1,0 +1,8 @@
+streamlit>=1.50
+pydantic>=2.5
+pypdf>=4.0
+requests>=2.31
+pandas>=2.0
+# Only needed to regenerate the sample PDFs and to run tests
+reportlab>=4.0
+pytest>=8.0

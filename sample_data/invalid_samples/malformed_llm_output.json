@@ -1,0 +1,13 @@
+{
+  "supplier_name": "Apex Systems",
+  "criteria": [
+    {"criterion_id": 1, "score": 14, "max_score": 10, "justification": "Score above range - should be clipped to 10", "evidence": "..."},
+    {"criterion_id": 2, "score": "eight", "justification": "Non-numeric score", "evidence": "..."},
+    {"criterion_id": 3, "score": "7/10", "max_score": 10},
+    {"criterion_id": 3, "score": 2, "justification": "Duplicate criterion_id - ignored"},
+    {"criterion_id": 99, "score": 5, "justification": "Unknown criterion - ignored"},
+    "not an object"
+  ],
+  "risks": "single string instead of list",
+  "overall_summary": null
+}
