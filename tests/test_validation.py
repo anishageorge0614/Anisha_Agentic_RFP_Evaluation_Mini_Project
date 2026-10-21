@@ -53,6 +53,32 @@ def test_configured_max_score_wins():
     assert ev["criteria"][0]["max_score"] == 10.0 and any("differs" in w for w in warnings)
 
 
+def test_evidence_reference_requires_an_exact_retrieved_quote():
+    sources = {
+        1: [{"source_ref": "P2-C1", "page_number": 2, "text": "The vendor encrypts all stored data with AES-256."}],
+        2: [],
+    }
+    raw = {
+        "criteria": [
+            {
+                "criterion_id": 1,
+                "score": 8,
+                "evidence": "The vendor encrypts all stored data with AES-256.",
+                "evidence_ref": "P2-C1",
+            }
+        ]
+    }
+    evaluation, warnings = validate_evaluation(raw, CRITERIA, "Acme", sources)
+    assert evaluation["criteria"][0]["evidence_ref"] == "P2-C1"
+    assert evaluation["criteria"][0]["retrieved_sources"] == sources[1]
+    assert not any("could not be matched" in warning for warning in warnings)
+
+    raw["criteria"][0]["evidence"] = "We are the industry's most secure platform."
+    evaluation, warnings = validate_evaluation(raw, CRITERIA, "Acme", sources)
+    assert evaluation["criteria"][0]["evidence_ref"] is None
+    assert any("could not be matched" in warning for warning in warnings)
+
+
 @pytest.mark.parametrize(
     "raw",
     ['{"a": 1}', '```json\n{"a": 1}\n```', 'Sure! Here you go:\n{"a": 1}\nHope this helps.'],

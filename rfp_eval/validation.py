@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
@@ -16,6 +17,7 @@ class RawCriterion(BaseModel):
     max_score: Any = None
     justification: Any = None
     evidence: Any = None
+    evidence_ref: Any = None
 
 
 class RawEvaluation(BaseModel):
@@ -55,8 +57,15 @@ def _text(value: Any, default: str = "") -> str:
     return s or default
 
 
+def _normalise_quote(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip().casefold()
+
+
 def validate_evaluation(
-    raw: Any, criteria: list[dict[str, Any]], supplier_name: str
+    raw: Any,
+    criteria: list[dict[str, Any]],
+    supplier_name: str,
+    retrieved_sources: dict[int, list[dict[str, Any]]] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Return (normalised evaluation, warnings).
 
@@ -110,6 +119,8 @@ def validate_evaluation(
             "valid": False,
             "justification": "",
             "evidence": NOT_FOUND,
+            "evidence_ref": None,
+            "retrieved_sources": (retrieved_sources or {}).get(cid, []),
         }
         if rc is None:
             warnings.append(f"Criterion '{name}' missing from LLM output; scored as 0 and excluded from benchmark.")
@@ -117,6 +128,25 @@ def validate_evaluation(
         else:
             entry["justification"] = _text(rc.justification, "No justification provided.")
             entry["evidence"] = _text(rc.evidence, NOT_FOUND)
+            candidates = (retrieved_sources or {}).get(cid, [])
+            evidence_quote = _normalise_quote(entry["evidence"])
+            requested_ref = _text(rc.evidence_ref)
+            matching = next(
+                (
+                    source
+                    for source in candidates
+                    if (not requested_ref or source["source_ref"] == requested_ref)
+                    and len(evidence_quote) >= 20
+                    and evidence_quote in _normalise_quote(source["text"])
+                ),
+                None,
+            )
+            if matching:
+                entry["evidence_ref"] = matching["source_ref"]
+            elif candidates and evidence_quote != _normalise_quote(NOT_FOUND):
+                warnings.append(
+                    f"Criterion '{name}': evidence quote could not be matched to retrieved passages; review source context."
+                )
             score = _to_float(rc.score)
             reported_max = _to_float(rc.max_score)
             if reported_max is not None and reported_max != max_score:

@@ -11,9 +11,10 @@ from datetime import date, datetime, timezone
 from typing import Any, Callable
 
 from . import db
-from .document_tool import DocumentError, extract_pdf_text
+from .document_tool import DocumentError, extract_pdf_pages
 from .llm import LLMConfig, LLMError, LLMFormatError, evaluate_supplier
 from .ranking import rank_suppliers
+from .rag import retrieve_for_criteria
 from .validation import validate_evaluation
 
 RATING_MIN, RATING_MAX = 0.0, 10.0
@@ -101,16 +102,19 @@ def run_evaluation(
         name = s.supplier_name.strip()
         note(f"Evaluating {name} ({idx + 1}/{n})", idx / n)
         try:
-            text, pages = extract_pdf_text(s.pdf_bytes)
+            pages = extract_pdf_pages(s.pdf_bytes)
+            text = "\n\n".join(f"[Page {page.page_number}]\n{page.text}" for page in pages)
+            retrieval_contexts = retrieve_for_criteria(criteria, pages)
             try:
-                raw = evaluate_supplier(llm_cfg, criteria, name, text)
+                raw = evaluate_supplier(llm_cfg, criteria, name, text, retrieval_contexts)
             except LLMFormatError:
-                raw = evaluate_supplier(llm_cfg, criteria, name, text)  # one retry on unusable JSON
+                raw = evaluate_supplier(llm_cfg, criteria, name, text, retrieval_contexts)  # one retry on unusable JSON
         except (DocumentError, LLMError) as exc:
             failed.append({"supplier_name": name, "error": str(exc)})
             run_warnings.append(f"{name}: excluded from ranking - {exc}")
             continue
-        evaluation, warnings = validate_evaluation(raw, criteria, name)
+        evaluation, warnings = validate_evaluation(raw, criteria, name, retrieval_contexts)
+        db.save_supplier_pages(conn, run_id, name, pages)
         prepared.append(
             {
                 "supplier_name": name,
@@ -119,7 +123,7 @@ def run_evaluation(
                 else str(s.submission_date),
                 "experience_rating": float(s.experience_rating),
                 "source_file": s.filename,
-                "page_count": pages,
+                "page_count": len(pages),
                 "evaluation": evaluation,
                 "warnings": warnings,
             }

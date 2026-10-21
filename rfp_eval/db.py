@@ -37,6 +37,13 @@ CREATE TABLE IF NOT EXISTS supplier_results (
     result_json       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_results_run ON supplier_results(rfp_run_id);
+CREATE TABLE IF NOT EXISTS supplier_documents (
+    rfp_run_id    TEXT NOT NULL REFERENCES rfp_runs(rfp_run_id),
+    supplier_name TEXT NOT NULL,
+    page_number   INTEGER NOT NULL,
+    page_text     TEXT NOT NULL,
+    PRIMARY KEY (rfp_run_id, supplier_name, page_number)
+);
 """
 
 SEED_CRITERIA = [
@@ -145,6 +152,34 @@ def save_run_results(conn: sqlite3.Connection, run_id: str, result: dict[str, An
 def set_run_status(conn: sqlite3.Connection, run_id: str, status: str) -> None:
     conn.execute("UPDATE rfp_runs SET status=? WHERE rfp_run_id=?", (status, run_id))
     conn.commit()
+
+
+def save_supplier_pages(conn: sqlite3.Connection, run_id: str, supplier_name: str, pages: list[Any]) -> None:
+    with conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO supplier_documents (rfp_run_id, supplier_name, page_number, page_text) "
+            "VALUES (?, ?, ?, ?)",
+            [
+                (run_id, supplier_name, page.page_number, page.text)
+                for page in pages
+            ],
+        )
+
+
+def get_run_documents(conn: sqlite3.Connection, run_id: str, supplier_name: str | None = None) -> list[dict[str, Any]]:
+    if supplier_name is None:
+        rows = conn.execute(
+            "SELECT supplier_name, page_number, page_text FROM supplier_documents "
+            "WHERE rfp_run_id=? ORDER BY supplier_name COLLATE NOCASE, page_number",
+            (run_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT supplier_name, page_number, page_text FROM supplier_documents "
+            "WHERE rfp_run_id=? AND supplier_name=? ORDER BY page_number",
+            (run_id, supplier_name),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def list_runs(conn: sqlite3.Connection) -> list[dict[str, Any]]:

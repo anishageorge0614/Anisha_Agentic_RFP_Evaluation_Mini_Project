@@ -44,6 +44,8 @@ def test_full_run_is_persisted_and_reproducible(conn, sample_pdfs):
     assert conn.execute("SELECT status FROM rfp_runs WHERE rfp_run_id=?", (r1["rfp_run_id"],)).fetchone()[0] == "COMPLETED"
     loaded = db.load_run(conn, r1["rfp_run_id"])
     assert [s["final_rank"] for s in loaded["suppliers"]] == [1, 2, 3, 4]
+    assert len(db.get_run_documents(conn, r1["rfp_run_id"])) == sum(s["page_count"] for s in r1["suppliers"])
+    assert all(c["retrieved_sources"] for s in r1["suppliers"] for c in s["criteria"])
 
 
 def test_expected_sample_profile(conn, sample_pdfs):
@@ -145,7 +147,7 @@ def test_missing_key_and_api_errors(monkeypatch):
 def test_malformed_llm_json_retried_once(conn, sample_pdfs, monkeypatch):
     calls = {"n": 0}
 
-    def flaky(cfg, criteria, name, text):
+    def flaky(cfg, criteria, name, text, retrieval_contexts=None):
         calls["n"] += 1
         if calls["n"] == 1:
             raise llm.LLMFormatError("bad json")

@@ -10,9 +10,11 @@ import pandas as pd
 import streamlit as st
 
 from rfp_eval import db
-from rfp_eval.llm import OPENAI_COMPATIBLE_PRESETS, LLMConfig, LLMError
+from rfp_eval.document_tool import DocumentPage
+from rfp_eval.llm import OPENAI_COMPATIBLE_PRESETS, LLMConfig, LLMError, answer_question
 from rfp_eval.orchestrator import RATING_MAX, RATING_MIN, InputValidationError, SupplierInput, run_evaluation, validate_inputs
 from rfp_eval.ranking import TIE_BREAK_RULES
+from rfp_eval.rag import retrieve
 from sample_data.sample_inputs import SAMPLE_SUPPLIERS
 
 ROOT = Path(__file__).resolve().parent
@@ -68,8 +70,8 @@ cfg = llm_sidebar()
 st.title("📑 Agentic RFP Evaluation & Supplier Ranking")
 st.caption("The LLM judges proposal content. Deterministic Python does all arithmetic, benchmarking, tie-breaks and ranking.")
 
-tab_criteria, tab_input, tab_results, tab_run, tab_history = st.tabs(
-    ["1 · Criteria", "2 · Supplier input", "3 · Leaderboard & scorecards", "4 · Run details", "History"]
+tab_criteria, tab_input, tab_results, tab_run, tab_chat, tab_history = st.tabs(
+    ["1 · Criteria", "2 · Supplier input", "3 · Leaderboard & scorecards", "4 · Run details", "5 · RFP assistant", "History"]
 )
 
 
@@ -205,6 +207,13 @@ def render_results(result: dict) -> None:
         with st.expander(f"{c['criterion_name']} - {c['score']:g}/{c['max_score']:g}{flag}"):
             st.markdown(f"**Justification:** {c['justification']}")
             st.markdown(f"**Evidence:** {c['evidence']}")
+            if c.get("evidence_ref"):
+                st.caption(f"Verified quote: {c['evidence_ref']} · page {next((s['page_number'] for s in c['retrieved_sources'] if s['source_ref'] == c['evidence_ref']), '?')}")
+            elif c["evidence"] != "Not found in document":
+                st.warning("The evidence quote was not matched exactly to a retrieved source passage.")
+            for source in c.get("retrieved_sources", []):
+                st.markdown(f"**Retrieved context · {source['source_ref']} · page {source['page_number']}**")
+                st.write(source["text"])
     st.markdown("**Summary:** " + (chosen["overall_summary"] or "-"))
     if chosen["risks"]:
         st.markdown("**Risks:**\n" + "\n".join(f"- {r}" for r in chosen["risks"]))
@@ -249,6 +258,72 @@ with tab_run:
         render_run_details(st.session_state["result"])
     else:
         st.info("No run selected yet.")
+
+
+with tab_chat:
+    st.subheader("Ask about the proposals")
+    stored_runs = db.list_runs(conn)
+    if not stored_runs:
+        st.info("Evaluate proposals before starting a conversation.")
+    else:
+        run_id = st.selectbox("Evaluation run", [run["rfp_run_id"] for run in stored_runs], key="chat-run")
+        stored_result = db.load_run(conn, run_id) or {}
+        supplier_names = [supplier["supplier_name"] for supplier in stored_result.get("suppliers", [])]
+        supplier_scope = st.selectbox("Search within", ["All suppliers", *supplier_names], key=f"chat-scope-{run_id}")
+        chat_key = f"chat-messages-{run_id}-{supplier_scope}"
+        messages = st.session_state.setdefault(chat_key, [])
+        docs = db.get_run_documents(conn, run_id, None if supplier_scope == "All suppliers" else supplier_scope)
+        if not docs:
+            st.warning("This run has no indexed source pages. Reevaluate its proposals to enable evidence-grounded chat.")
+        if st.button("Clear conversation", key=f"clear-chat-{run_id}-{supplier_scope}"):
+            st.session_state[chat_key] = []
+            st.rerun()
+
+        for message in messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+                for source in message.get("sources", []):
+                    with st.expander(f"{source['citation_id']} · page {source['page_number']}"):
+                        st.write(source["text"])
+
+        question = st.chat_input(
+            "Ask a question about proposal evidence",
+            key=f"chat-input-{run_id}-{supplier_scope}",
+            disabled=not docs,
+        )
+        if question:
+            history = [
+                {"role": item["role"], "content": item["content"]}
+                for item in messages[-6:]
+                if item["role"] in {"user", "assistant"}
+            ]
+            messages.append({"role": "user", "content": question})
+            suppliers_in_scope = sorted({doc["supplier_name"] for doc in docs}, key=str.casefold)
+            passages = []
+            for supplier_name in suppliers_in_scope:
+                pages = [
+                    DocumentPage(doc["page_number"], doc["page_text"])
+                    for doc in docs
+                    if doc["supplier_name"] == supplier_name
+                ]
+                passages.extend(
+                    {
+                        **source,
+                        "supplier_name": supplier_name,
+                        "citation_id": f"{supplier_name} | {source['source_ref']}",
+                    }
+                    for source in retrieve(question, pages, top_k=3)
+                )
+            passages.sort(key=lambda source: (-source["relevance"], source["supplier_name"].casefold(), source["page_number"], source["source_ref"]))
+            passages = passages[:8]
+            try:
+                response = answer_question(cfg, question, passages, history)
+                cited = set(response["citations"])
+                cited_sources = [source for source in passages if source["citation_id"] in cited]
+                messages.append({"role": "assistant", "content": response["answer"], "sources": cited_sources})
+            except LLMError as exc:
+                messages.append({"role": "assistant", "content": f"Assistant error: {exc}", "sources": []})
+            st.rerun()
 
 with tab_history:
     runs = db.list_runs(conn)
